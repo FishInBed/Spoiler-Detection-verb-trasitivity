@@ -1,0 +1,249 @@
+---
+title: "Process"
+author: "In Bed"
+date: "2021/12/13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tmcn)
+library(qdapRegex)
+library(SnowballC)
+library(slam)
+library(jiebaR)
+library(dplyr)
+library(tm)
+library(tokenizers)
+library(caret)
+library(proxy)
+```
+
+```{r}
+data = read.csv(file = "crawl.csv", sep = ",")
+
+for(i in 1:964){
+ if(grepl("雷", data$post_title[i], perl = T) == TRUE & grepl("無雷", data$post_title[i], perl = T) == FALSE){
+ data$label[i] = c("Spoiler")  
+ }else{
+   data$label[i] = c("review")
+ }
+}
+incomplete = c(2, 28, 88, 109, 141, 159, 167, 174, 200, 218, 302, 345, 402, 429, 463, 489, 501, 536, 565, 570, 595, 601, 631, 669, 715, 872)
+data = subset(data, select = -c(X))
+announce = grep("公告", data$post_title, perl = T)
+
+data = data[-c(announce), ]
+write.csv(data, "label.csv")
+
+new_data = read.csv(file = "label.csv", sep = ",")
+
+## stopwordlist = stopwordsCN(useStopDic = T)
+## cutter <- worker()
+## filter = c(stopwordlist)
+## f_cut = segment(data$post_content[1], cutter)
+## f_cutcut = filter_segment(f_cut, filter)
+## word_list = list(f_cutcut)
+
+## for(i in 2:952){
+  ##text_cut = segment(data$post_content[i], cutter)
+  ##jiebacut = list(filter_segment(text_cut, filter))
+  ##word_list = c(word_list, jiebacut)
+##}
+
+word_raw = read.csv(file = "word.csv", sep = ",", fileEncoding = "UTF-8-BOM")
+word_raw = word_raw[-c(announce, incomplete), ]
+word <- data.frame(t(word_raw[-1]))
+colnames(word) <- word_raw[, 1]
+
+wordy = as.list(word)
+
+sub_eng = function(x){
+  gsub("[A-Za-z0-9]", "", x, perl = T)
+}
+
+delete_space = function(y){
+  space = which(y == "")
+}
+
+search_na = function(z){
+  null_value = which((is.na(z)) == TRUE)
+  return(null_value)
+}
+
+for (i in 1:926){
+  wordy[[i]] = sub_eng(wordy[[i]])
+  wordy[[i]] = wordy[[i]][-delete_space(wordy[[i]])]
+  wordy[[i]] = wordy[[i]][-search_na(wordy[[i]])]
+}
+
+for (i in 1:926) {
+  wordy[[i]] = gsub("，|。|：|；|《|》|〈|〉|、|＜|＞|“|", "", wordy[[i]], perl = T)
+}
+
+corpus = Corpus(VectorSource(wordy))
+
+dtm_tfidf = DocumentTermMatrix(corpus,
+                               control = list(weighting = weightTfIdf,
+                                              removePunctuation = T,
+                                              removeNumbers = T,
+                                              stemming = F))
+dtm_tfidf = removeSparseTerms(dtm_tfidf, 0.9)
+
+inspect(head(dtm_tfidf))
+```
+
+```{r}
+pos_tag_raw = read.csv(file = "pos.csv", sep = ",")
+pos_tag <- data.frame(t(pos_tag_raw[-1]))
+colnames(pos_tag) <- pos_tag_raw[, 1]
+pos_tag = pos_tag[,-c(announce, incomplete)]
+
+for(i in 1:926){
+  a = grep("V", pos_tag[[i]], perl = T, ignore.case = F)
+  b = grep("VB", pos_tag[[i]], perl = T, ignore.case = F)
+  c = grep("VC", pos_tag[[i]], perl = T, ignore.case = F)
+  d = grep("VD", pos_tag[[i]], perl = T, ignore.case = F)
+  e = grep("VE", pos_tag[[i]], perl = T, ignore.case = F)
+  new_data$transitivity[i] = (length(b)+length(c)+length(d)+length(e))/length(a)
+  new_data$VB[i] = length(b)
+  new_data$VC[i] = length(c)
+  new_data$VD[i] = length(d)
+  new_data$VE[i] = length(e)
+}
+
+## BCDE
+```
+
+```{r}
+training_data = subset(new_data, select = -c(X, post_title, post_content, label))
+add_data = cbind(as.matrix(training_data), dtm_tfidf)
+
+set.seed(10)
+new_data$label = as.factor(new_data$label)
+trainIndex <- createDataPartition(new_data$label, p=0.8, list=FALSE)
+
+test_content = new_data[-trainIndex,]
+train_set = as.matrix(add_data[trainIndex,])
+test_set = as.matrix(add_data[-trainIndex,])
+train_set_only_tfidf <- as.matrix(dtm_tfidf[trainIndex,])
+test_set_only_tfidf <- as.matrix(dtm_tfidf[-trainIndex,])
+train_labels <- new_data$label[trainIndex]
+test_labels <- new_data$label[-trainIndex]
+train_set_feature = as.matrix(training_data[trainIndex,])
+test_set_feature = as.matrix(training_data[-trainIndex,])
+which(is.na(test_set) == TRUE)
+which(is.na(test_set_feature) == TRUE)
+
+train_set[161] = 0
+train_set[385] = 0
+train_set[415] = 0
+test_set[117] = 0
+test_set_feature[117] = 0
+```
+
+```{r}
+require(e1071)
+
+## svm_model_only_feature = svm(x = train_set_only_feature, y = as.factor(train_labels))
+## test_pred_only_feature = predict(svm_model_only_feature, test_set_only_feature)
+## table_matrix_only_feature <- confusionMatrix(test_pred_only_feature, as.factor(test_labels), mode='prec_recall')
+
+svm_model_only_tfidf = svm(x = train_set_only_tfidf, y = as.factor(train_labels))
+test_pred_only_tfidf = predict(svm_model_only_tfidf, test_set_only_tfidf)
+table_matrix_only_tfidf <- confusionMatrix(test_pred_only_tfidf, as.factor(test_labels), mode='prec_recall')
+
+svm_model = svm(x = train_set, y = as.factor(train_labels))
+pred = predict(svm_model, test_set)
+table_matrix = confusionMatrix(pred, as.factor(test_labels), mode = "prec_recall")
+
+svm_model_feature = svm(x = train_set_feature, y = as.factor(train_labels))
+pred_feature = predict(svm_model_feature, test_set_feature)
+table_matrix_feature = confusionMatrix(pred_feature, as.factor(test_labels), mode = "prec_recall")
+
+table_matrix_only_tfidf
+table_matrix
+table_matrix_feature
+```
+
+```{r}
+naive_data = cbind(new_data, data.frame(as.matrix(dtm_tfidf)))
+naive_data = subset(naive_data, select = -c(X, post_title, post_content, transitivity, VB, VC, VD, VE))
+naiveBayesModel <- naiveBayes(label ~ ., data = naive_data)
+
+NaivePred <- predict(naiveBayesModel,naive_data)
+
+table_matrix_naive = confusionMatrix(NaivePred, as.factor(naive_data$label), mode = "prec_recall")
+table_matrix_naive
+```
+
+```{r}
+
+```
+
+```{r}
+wrong_cases = as.data.frame(pred[which(pred != test_labels)])
+wrong_cases = cbind(wrong_cases, test_labels[which(pred != test_labels)])
+wrong_cases = cbind(wrong_cases, test_content$post_content[which(pred != test_labels)])
+wrong_cases = cbind(wrong_cases, test_content$post_title[which(pred != test_labels)])
+colnames(wrong_cases) = c("prediction", "answer", "contents", "title")
+write.csv(wrong_cases, "wrong_78.csv")
+```
+
+logistic regression
+```{r}
+library(glmnet)
+lr_model_tfidf = cv.glmnet(x = train_set_only_tfidf, y = train_labels, 
+                              family = 'binomial', 
+                              # L1 penalty
+                              alpha = 1,
+                              # interested in the area under ROC curve
+                              type.measure = "auc",
+                              # 5-fold cross-validation
+                              nfolds = 10,
+                              # high value is less accurate, but has faster training
+                              thresh = 1e-3,
+                              # again lower number of iterations for faster training
+                              maxit = 1e3)
+
+lr_model = cv.glmnet(x = train_set, y = train_labels, 
+                              family = 'binomial', 
+                              # L1 penalty
+                              alpha = 1,
+                              # interested in the area under ROC curve
+                              type.measure = "auc",
+                              # 5-fold cross-validation
+                              nfolds = 10,
+                              # high value is less accurate, but has faster training
+                              thresh = 1e-3,
+                              # again lower number of iterations for faster training
+                              maxit = 1e3)
+```
+
+```{r}
+preds_tfidf = predict(lr_model_tfidf, test_set_only_tfidf, type = 'response')[,1]
+for (i in 1:length(test_labels)){
+  if (preds_tfidf[i] < 0.45){
+    preds_tfidf[i] = c("review")
+  }else{
+    preds_tfidf[i] = c("Spoiler")
+  }
+}
+table_matrix_lr_tfidf <- confusionMatrix(as.factor(preds_tfidf), as.factor(test_labels), mode='prec_recall')
+
+preds_lr = predict(lr_model, test_set, type = 'response')[,1]
+for (i in 1:length(test_labels)){
+  if (preds_lr[i] < 0.45){
+    preds_lr[i] = c("review")
+  }else{
+    preds_lr[i] = c("Spoiler")
+  }
+}
+table_matrix_lr <- confusionMatrix(as.factor(preds_lr), as.factor(test_labels), mode='prec_recall')
+table_matrix_lr_tfidf
+table_matrix_lr
+```
+
